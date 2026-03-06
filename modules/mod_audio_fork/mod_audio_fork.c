@@ -117,7 +117,27 @@ static switch_status_t do_stop(switch_core_session_t *session)
 	return status;
 }
 
-#define FORK_API_SYNTAX "<uuid> [start | stop] [wss-url] [mono | mixed | stereo] [8k | 16k] [metadata]"
+static switch_status_t do_clear(switch_core_session_t *session)
+{
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	switch_media_bug_t *bug = switch_channel_get_private(channel, MY_BUG_NAME);
+
+	if (bug) {
+		struct cap_cb *cb = (struct cap_cb *) switch_core_media_bug_get_user_data(bug);
+		if (cb) {
+			switch_mutex_lock(cb->mutex);
+			cb->recv_write_pos = 0;
+			cb->recv_read_pos = 0;
+			switch_mutex_unlock(cb->mutex);
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "mod_audio_fork: cleared recv buffer (barge-in).\n");
+			return SWITCH_STATUS_SUCCESS;
+		}
+	}
+
+	return SWITCH_STATUS_FALSE;
+}
+
+#define FORK_API_SYNTAX "<uuid> [start | stop | clear] [wss-url] [mono | mixed | stereo] [8k | 16k] [metadata]"
 SWITCH_STANDARD_API(fork_function)
 {
 	char *mycmd = NULL, *argv[6] = { 0 };
@@ -138,7 +158,10 @@ SWITCH_STANDARD_API(fork_function)
 		if ((lsession = switch_core_session_locate(argv[0]))) {
 			if (!strcasecmp(argv[1], "stop")) {
 				status = do_stop(lsession);
-      } 
+      }
+      else if (!strcasecmp(argv[1], "clear")) {
+				status = do_clear(lsession);
+      }
       else if (!strcasecmp(argv[1], "start")) {
         char host[MAX_WS_URL_LEN], path[MAX_PATH_LEN];
         unsigned int port;
