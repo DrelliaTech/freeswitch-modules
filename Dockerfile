@@ -76,7 +76,6 @@ RUN cp build/modules.conf.in build/modules.conf.in.orig \
     && cat > build/modules.conf.in <<'MODULES'
 applications/mod_commands
 applications/mod_dptools
-applications/mod_spandsp
 dialplans/mod_dialplan_xml
 endpoints/mod_loopback
 endpoints/mod_sofia
@@ -94,7 +93,16 @@ RUN ./bootstrap.sh -j \
       --enable-core-pgsql-support=no \
       --enable-core-odbc-support=no \
     && make -j"$(nproc)" \
-    && make install
+    && make install \
+    && rm -rf /usr/local/freeswitch/etc/freeswitch/autoload_configs \
+    && rm -rf /usr/local/freeswitch/etc/freeswitch/dialplan \
+    && rm -rf /usr/local/freeswitch/etc/freeswitch/sip_profiles \
+    && rm -rf /usr/local/freeswitch/etc/freeswitch/directory \
+    && mkdir -p /usr/local/freeswitch/etc/freeswitch/autoload_configs \
+    && mkdir -p /usr/local/freeswitch/etc/freeswitch/dialplan \
+    && mkdir -p /usr/local/freeswitch/etc/freeswitch/sip_profiles \
+    && mkdir -p /usr/local/freeswitch/etc/freeswitch/directory \
+    && mkdir -p /usr/local/freeswitch/log
 
 # ---------------------------------------------------------------------------
 # Build our custom mod_audio_fork
@@ -139,7 +147,7 @@ RUN ldconfig
 
 # Install our custom mod_audio_fork
 COPY --from=builder /build/mod_audio_fork/mod_audio_fork.so \
-     /usr/local/freeswitch/mod/mod_audio_fork.so
+     /usr/local/freeswitch/lib/freeswitch/mod/mod_audio_fork.so
 
 # Add freeswitch to PATH
 ENV PATH="/usr/local/freeswitch/bin:${PATH}"

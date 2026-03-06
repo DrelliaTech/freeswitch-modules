@@ -55,7 +55,6 @@ Only the modules required by the voice gateway are compiled:
 | mod_commands | API commands |
 | mod_dptools | Dialplan tools (answer, bridge, etc.) |
 | mod_dialplan_xml | XML dialplan |
-| mod_spandsp | DTMF detection |
 | mod_audio_fork | **Custom** — bidirectional WebSocket audio |
 | mod_sndfile | Audio file format support |
 | mod_native_file | Native file playback |
