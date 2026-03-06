@@ -12,6 +12,11 @@
 #define MAX_WS_URL_LEN (512)
 #define MAX_PATH_LEN (128)
 
+/* Receive ring buffer: 256KB ~= 16 seconds of L16 audio at 8kHz mono.
+   TTS audio arrives in bursts (faster than real-time) from the voice-gateway,
+   while fork_write_frame drains at real-time rate (320 bytes per 20ms frame). */
+#define RECV_BUF_SIZE (256 * 1024)
+
 enum {
 	LWS_CLIENT_IDLE,
 	LWS_CLIENT_CONNECTING,
@@ -45,6 +50,11 @@ struct cap_cb {
   uint8_t audio_buffer[LWS_PRE + (SWITCH_RECOMMENDED_BUFFER_SIZE << 1)];
   uint8_t* buf_head;
   struct lws_per_vhost_data* vhd;
+
+  /* Ring buffer for audio received from WebSocket (injected into call) */
+  uint8_t recv_buffer[RECV_BUF_SIZE];
+  size_t recv_write_pos;
+  size_t recv_read_pos;
 };
 
 #endif

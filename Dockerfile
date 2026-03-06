@@ -1,82 +1,150 @@
-FROM debian:jessie
+# Build FreeSWITCH from source with custom mod_audio_fork.
+# Produces a minimal image with only the modules needed for the voice gateway.
+#
+# Usage:
+#   docker build -t drellia/freeswitch-mrf .
 
-COPY ./modules.conf.in.patch ./Makefile.am.patch ./configure.ac.patch /
-COPY ./modules/mod_audio_fork /mod_google_audio_fork
-COPY ./modules/mod_google_tts /mod_google_tts
-COPY ./modules/mod_google_transcribe /mod_google_transcribe
-COPY ./modules/mod_dialogflow /mod_dialogflow
+# =============================================================================
+# Stage 1: Build FreeSWITCH + libwebsockets + mod_audio_fork
+# =============================================================================
+FROM debian:bookworm-slim AS builder
 
-RUN apt-get update && apt-get -y --quiet --force-yes upgrade \
-    && apt-get install -y --quiet --no-install-recommends wget curl git automake autoconf cmake libtool libtool-bin build-essential pkg-config zlib1g-dev libjpeg-dev sqlite3 libsqlite3-dev libcurl4-gnutls-dev libldns-dev libpcre3-dev libspeex-dev libspeexdsp-dev libedit-dev libssl-dev yasm libopus-dev libsndfile-dev ca-certificates php5-dev liblua5.2-dev python \
-    && apt-get update \
-    && wget  --no-check-certificate  -O - https://files.freeswitch.org/repo/deb/debian/freeswitch_archive_g0.pub | apt-key add - \
-    && echo "deb http://files.freeswitch.org/repo/deb/freeswitch-1.6/ jessie main" > /etc/apt/sources.list.d/freeswitch.list \
-    && apt-get update \
-    && apt-get install -y --force-yes --no-install-recommends freeswitch-all \
-    && cd /usr/local/src \
-    && git clone https://freeswitch.org/stash/scm/fs/freeswitch.git -bv1.6 freeswitch \
-    && cd freeswitch \
-    && patch < /Makefile.am.patch \
-    && patch < /configure.ac.patch \
-    && cd build \
-    && patch < /modules.conf.in.patch \
-    && cd /usr/local/src/freeswitch/conf/vanilla/autoload_configs \
-    && patch < modules.conf.vanilla.xml.patch \
-    && cd /usr/local/src/freeswitch \
-    && cp -r /mod_google_audio_fork /usr/local/src/freeswitch/src/mod/applications \
-    && cp -r /mod_google_tts /usr/local/src/freeswitch/src/mod/applications \
-    && cp -r /mod_dialogflow /usr/local/src/freeswitch/src/mod/applications \
-    && cp -r /mod_google_transcribe /usr/local/src/freeswitch/src/mod/applications \
-    && cd /usr/local/src/freeswitch/libs \
-    && git clone -b v3.1.0 https://github.com/warmcat/libwebsockets.git \
-    && cd libwebsockets \
-    && mkdir build && cd build \
-    && cmake .. && make && make install \
-    && cd /usr/local/src \
-    && git clone -b v1.18.0 https://github.com/grpc/grpc \
-    && cd grpc \
-    && git submodule update --init --recursive \
-    && make && make install \
-    && cd third_party/protobuf \
-    && ./autogen.sh && ./configure && make && make install \
-    && cd ../.. \
-    && cd /usr/local/src/freeswitch/libs \
-    && git clone https://github.com/googleapis/googleapis.git \
-    && cd googleapis \
-    && export LANGUAGE=cpp \
-    && make all \
-    && cd /usr/local/src/freeswitch \
-    && ./bootstrap.sh -j \
-    && ./configure --with-grpc=yes --with-lws=yes \
-    && make \
-    && make install \ 
-    && make sounds-install moh-install \ 
-    && cd /usr/local/freeswitch \
-    && rm -Rf log conf htdocs font recordings \
-    && rm -Rf /usr/local/src/freeswitch \ 
-    && rm -Rf /usr/local/src/grpc \ 
-    && apt-get purge -y --quiet --force-yes  --auto-remove cmake autoconf automake autotools-dev build-essential cpp cpp-4.9 \
-    git java-common javascript-common manpages manpages-dev openjdk-7-jre-headless:amd64 curl wget \
-    freeswitch-mod-callcenter freeswitch-mod-cdr-csv php5-dev python \
-    freeswitch-mod-cdr-mongodb freeswitch-mod-cdr-sqlite freeswitch-mod-cidlookup freeswitch-mod-dahdi-codec freeswitch-mod-db \
-    freeswitch-mod-dialplan-asterisk freeswitch-mod-dingaling freeswitch-mod-distributor freeswitch-mod-easyroute freeswitch-mod-enum \
-    freeswitch-mod-esf freeswitch-mod-fifo freeswitch-mod-fsk freeswitch-mod-fsv freeswitch-mod-g729 \
-    freeswitch-mod-java freeswitch-mod-json-cdr freeswitch-mod-kazoo freeswitch-mod-lcr freeswitch-mod-lua freeswitch-mod-memcache \
-    freeswitch-mod-nibblebill freeswitch-mod-perl freeswitch-mod-portaudio freeswitch-mod-portaudio-stream freeswitch-mod-python \
-    freeswitch-mod-redis freeswitch-mod-rss freeswitch-mod-rtc freeswitch-mod-rtmp freeswitch-mod-shell-stream freeswitch-mod-skinny \
-    freeswitch-mod-skypopen freeswitch-mod-sms freeswitch-mod-snapshot freeswitch-mod-snom freeswitch-mod-sonar freeswitch-mod-soundtouch \
-    freeswitch-mod-spandsp freeswitch-mod-spy freeswitch-mod-stress freeswitch-mod-theora freeswitch-mod-valet-parking freeswitch-mod-verto \
-    freeswitch-mod-voicemail freeswitch-mod-voicemail-ivr freeswitch-mod-xml-cdr freeswitch-mod-xml-curl freeswitch-mod-xml-rpc \
-    freeswitch-mod-xml-scgi perl perl-modules  liblocale-gettext-perl libtext-charwidth-perl libtext-iconv-perl libtext-wrapi18n-perl \
-    && rm -rf /var/lib/{apt,dpkg,cache,log}/ \
-    && rm -Rf /var/log/* \
-    && rm -Rf /var/lib/apt/lists/* 
+ENV DEBIAN_FRONTEND=noninteractive
 
-ADD conf.tar.gz /usr/local/freeswitch
+# Build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates curl \
+    build-essential cmake automake autoconf libtool libtool-bin pkg-config \
+    libssl-dev libcurl4-openssl-dev libpcre3-dev \
+    libspeex-dev libspeexdsp-dev \
+    libedit-dev libsqlite3-dev libtiff-dev libjpeg-dev \
+    libopus-dev libsndfile1-dev uuid-dev \
+    yasm nasm \
+    python3-dev \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r freeswitch && useradd -r -g freeswitch freeswitch 
+# ---------------------------------------------------------------------------
+# Build libwebsockets 4.3.3
+# ---------------------------------------------------------------------------
+RUN wget -qO /tmp/lws.tar.gz \
+      https://github.com/warmcat/libwebsockets/archive/refs/tags/v4.3.3.tar.gz \
+    && cd /tmp && tar xzf lws.tar.gz \
+    && cd libwebsockets-4.3.3 && mkdir build && cd build \
+    && cmake .. \
+      -DLWS_WITHOUT_TESTAPPS=ON \
+      -DLWS_WITHOUT_TEST_SERVER=ON \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+    && make -j"$(nproc)" && make install \
+    && ldconfig \
+    && rm -rf /tmp/lws.tar.gz /tmp/libwebsockets-4.3.3
 
-ONBUILD ADD dialplan /usr/local/freeswitch/conf/dialplan
-ONBUILD ADD sip_profiles /usr/local/freeswitch/conf/sip_profiles
+# ---------------------------------------------------------------------------
+# Build spandsp (FreeSWITCH needs it, not in Debian bookworm)
+# ---------------------------------------------------------------------------
+RUN cd /tmp \
+    && git clone --depth 1 https://github.com/freeswitch/spandsp.git \
+    && cd spandsp \
+    && ./bootstrap.sh \
+    && ./configure --prefix=/usr/local \
+    && make -j"$(nproc)" && make install \
+    && ldconfig \
+    && rm -rf /tmp/spandsp
 
-RUN chown -R freeswitch:freeswitch /usr/local/freeswitch
+# ---------------------------------------------------------------------------
+# Build sofia-sip (FreeSWITCH's SIP stack)
+# ---------------------------------------------------------------------------
+RUN cd /tmp \
+    && git clone --depth 1 https://github.com/freeswitch/sofia-sip.git \
+    && cd sofia-sip \
+    && ./bootstrap.sh \
+    && ./configure --prefix=/usr/local \
+    && make -j"$(nproc)" && make install \
+    && ldconfig \
+    && rm -rf /tmp/sofia-sip
+
+# ---------------------------------------------------------------------------
+# Build FreeSWITCH 1.10 with minimal modules
+# ---------------------------------------------------------------------------
+RUN cd /usr/local/src \
+    && git clone --depth 1 -b v1.10 https://github.com/signalwire/freeswitch.git
+
+WORKDIR /usr/local/src/freeswitch
+
+# Trim modules.conf to only what the voice gateway needs
+RUN cp build/modules.conf.in build/modules.conf.in.orig \
+    && cat > build/modules.conf.in <<'MODULES'
+applications/mod_commands
+applications/mod_dptools
+applications/mod_spandsp
+dialplans/mod_dialplan_xml
+endpoints/mod_loopback
+endpoints/mod_sofia
+event_handlers/mod_event_socket
+formats/mod_native_file
+formats/mod_sndfile
+formats/mod_tone_stream
+loggers/mod_console
+loggers/mod_logfile
+MODULES
+
+RUN ./bootstrap.sh -j \
+    && ./configure \
+      --prefix=/usr/local/freeswitch \
+      --enable-core-pgsql-support=no \
+      --enable-core-odbc-support=no \
+    && make -j"$(nproc)" \
+    && make install
+
+# ---------------------------------------------------------------------------
+# Build our custom mod_audio_fork
+# ---------------------------------------------------------------------------
+COPY modules/mod_audio_fork/ /build/mod_audio_fork/
+WORKDIR /build/mod_audio_fork
+
+RUN gcc -fPIC -c \
+      -I/usr/local/freeswitch/include/freeswitch \
+      $(pkg-config --cflags libwebsockets) \
+      mod_audio_fork.c -o mod_audio_fork.o \
+    && g++ -fPIC -std=c++11 -c \
+      -I/usr/local/freeswitch/include/freeswitch \
+      $(pkg-config --cflags libwebsockets) \
+      lws_glue.cpp -o lws_glue.o \
+    && g++ -shared -o mod_audio_fork.so mod_audio_fork.o lws_glue.o \
+      $(pkg-config --libs libwebsockets) \
+      -lspeexdsp
+
+# =============================================================================
+# Stage 2: Minimal runtime image
+# =============================================================================
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 libcurl4 libpcre3 \
+    libspeex1 libspeexdsp1 \
+    libedit2 libsqlite3-0 libtiff6 libjpeg62-turbo \
+    libopus0 libsndfile1 libuuid1 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy FreeSWITCH installation
+COPY --from=builder /usr/local/freeswitch/ /usr/local/freeswitch/
+
+# Copy shared libraries built from source (libwebsockets, spandsp, sofia-sip)
+COPY --from=builder /usr/local/lib/ /usr/local/lib/
+RUN ldconfig
+
+# Install our custom mod_audio_fork
+COPY --from=builder /build/mod_audio_fork/mod_audio_fork.so \
+     /usr/local/freeswitch/mod/mod_audio_fork.so
+
+# Add freeswitch to PATH
+ENV PATH="/usr/local/freeswitch/bin:${PATH}"
+
+# SIP, ESL, RTP range
+EXPOSE 5060/udp 5060/tcp 8021/tcp 16384-32768/udp
+
+CMD ["freeswitch", "-nonat", "-nf"]

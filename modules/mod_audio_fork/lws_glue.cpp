@@ -44,6 +44,58 @@ namespace {
     assert(cb->buf_head <= &cb->audio_buffer[0] + sizeof(cb->audio_buffer));
   }
 
+  /* --- Receive ring buffer helpers (WebSocket → call audio injection) --- */
+
+  void recvBufInit(struct cap_cb* cb) {
+    cb->recv_write_pos = 0;
+    cb->recv_read_pos = 0;
+  }
+
+  size_t recvBufAvailable(struct cap_cb* cb) {
+    size_t w = cb->recv_write_pos;
+    size_t r = cb->recv_read_pos;
+    if (w >= r) return w - r;
+    return RECV_BUF_SIZE - r + w;
+  }
+
+  size_t recvBufSpace(struct cap_cb* cb) {
+    return RECV_BUF_SIZE - 1 - recvBufAvailable(cb);
+  }
+
+  size_t recvBufWrite(struct cap_cb* cb, const uint8_t* data, size_t len) {
+    size_t space = recvBufSpace(cb);
+    if (len > space) len = space;  /* drop excess if full */
+    if (len == 0) return 0;
+
+    size_t w = cb->recv_write_pos;
+    size_t first = RECV_BUF_SIZE - w;
+    if (first >= len) {
+      memcpy(cb->recv_buffer + w, data, len);
+    } else {
+      memcpy(cb->recv_buffer + w, data, first);
+      memcpy(cb->recv_buffer, data + first, len - first);
+    }
+    cb->recv_write_pos = (w + len) % RECV_BUF_SIZE;
+    return len;
+  }
+
+  size_t recvBufRead(struct cap_cb* cb, uint8_t* out, size_t len) {
+    size_t avail = recvBufAvailable(cb);
+    if (len > avail) len = avail;
+    if (len == 0) return 0;
+
+    size_t r = cb->recv_read_pos;
+    size_t first = RECV_BUF_SIZE - r;
+    if (first >= len) {
+      memcpy(out, cb->recv_buffer + r, len);
+    } else {
+      memcpy(out, cb->recv_buffer + r, first);
+      memcpy(out + first, cb->recv_buffer, len - first);
+    }
+    cb->recv_read_pos = (r + len) % RECV_BUF_SIZE;
+    return len;
+  }
+
   void addPendingConnect(struct cap_cb* cb) {
     std::lock_guard<std::mutex> guard(g_mutex_connects);
     cb->state = LWS_CLIENT_IDLE;
@@ -98,7 +150,7 @@ namespace {
     i.host = i.address;
     i.origin = i.address;
     i.ssl_connection = cb->sslFlags;
-    i.protocol = "audiostream.drachtio.org";
+    i.protocol = "audio-fork";
     i.pwsi = &(cb->wsi);
 
     cb->state = LWS_CLIENT_CONNECTING;
@@ -259,6 +311,38 @@ namespace {
       }
       break;
 
+    case LWS_CALLBACK_CLIENT_RECEIVE:
+      {
+        struct cap_cb *cb = *pCb;
+        if (!cb || cb->state != LWS_CLIENT_CONNECTED) {
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+            "CLIENT_RECEIVE: cb=%p state=%d, ignoring %zu bytes\n", cb, cb ? cb->state : -1, len);
+          break;
+        }
+
+        int is_binary = lws_frame_is_binary(wsi);
+        /* Only accept binary frames (L16 audio); ignore text frames */
+        if (!is_binary) {
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
+            "CLIENT_RECEIVE: ignoring text frame (%zu bytes)\n", len);
+          break;
+        }
+
+        if (len > 0) {
+          switch_mutex_lock(cb->mutex);
+          size_t written = recvBufWrite(cb, (const uint8_t *)in, len);
+          size_t avail = recvBufAvailable(cb);
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
+            "CLIENT_RECEIVE: got %zu bytes, wrote %zu, buf_avail=%zu\n", len, written, avail);
+          if (written < len) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+              "recv buffer overrun: dropped %zu of %zu bytes\n", len - written, len);
+          }
+          switch_mutex_unlock(cb->mutex);
+        }
+      }
+      break;
+
     default:
       break;
     }
@@ -268,7 +352,7 @@ namespace {
 
   static const struct lws_protocols protocols[] = {
     {
-      "audiostream.drachtio.org",
+      "audio-fork",
       lws_callback,
       sizeof(void *),
       0,
@@ -326,20 +410,28 @@ extern "C" {
     }
 
     // parse host, port and path
+    // Format after scheme: host[:port][/path]
     strcpy(path, "/");
     char *p = server + offset;
-    char *pch = strtok(p, ":/");
-    while (pch) {
-      if (0 == i++) strncpy(host, pch, MAX_WS_URL_LEN);
-      else {
-        bool isdigits = true;
-        int idx = 0;
-        while (*(pch+idx) && isdigits) isdigits = isdigit(pch[idx++]);
-        if (isdigits) *pPort = atoi(pch);
-        else strncpy(path + 1, pch, MAX_PATH_LEN);
-      }
-      pch = strtok(NULL, ";/");
+
+    // Find the first '/' which separates host[:port] from path
+    char *slash = strchr(p, '/');
+    if (slash) {
+      strncpy(path, slash, MAX_PATH_LEN);
+      path[MAX_PATH_LEN - 1] = '\0';
+      *slash = '\0';  // terminate host[:port] portion
     }
+
+    // Parse host and optional port from "host" or "host:port"
+    char *colon = strchr(p, ':');
+    if (colon) {
+      *colon = '\0';
+      strncpy(host, p, MAX_WS_URL_LEN);
+      *pPort = atoi(colon + 1);
+    } else {
+      strncpy(host, p, MAX_WS_URL_LEN);
+    }
+    host[MAX_WS_URL_LEN - 1] = '\0';
 
     return 1;
   }
@@ -382,6 +474,7 @@ extern "C" {
     cb->metadata = NULL;
     cb->sampling = sampling;
     bufInit(cb);
+    recvBufInit(cb);
 
     switch_mutex_init(&cb->mutex, SWITCH_MUTEX_NESTED, switch_core_session_get_pool(session));
     switch_thread_cond_create(&cb->cond, switch_core_session_get_pool(session));
@@ -483,6 +576,51 @@ extern "C" {
       lws_cancel_service(cb->vhd->context);
     }
 
+    return SWITCH_TRUE;
+  }
+
+  static int write_frame_call_count = 0;
+  static int write_frame_lock_fail_count = 0;
+
+  switch_bool_t fork_write_frame(switch_media_bug_t *bug, void* user_data) {
+    switch_frame_t *frame = switch_core_media_bug_get_write_replace_frame(bug);
+    struct cap_cb *cb = (struct cap_cb *) user_data;
+
+    if (!frame || !frame->data || !frame->datalen) return SWITCH_TRUE;
+
+    write_frame_call_count++;
+
+    if (switch_mutex_trylock(cb->mutex) == SWITCH_STATUS_SUCCESS) {
+      size_t avail = recvBufAvailable(cb);
+
+      /* Log periodically and whenever data is available */
+      if (write_frame_call_count % 250 == 1 || (avail > 0 && write_frame_call_count % 25 == 0)) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
+          "fork_write_frame[%d]: avail=%zu frame_datalen=%u lock_fails=%d\n",
+          write_frame_call_count, avail, frame->datalen, write_frame_lock_fail_count);
+      }
+
+      if (avail >= frame->datalen) {
+        /* Fill the frame with received audio */
+        recvBufRead(cb, (uint8_t *)frame->data, frame->datalen);
+        frame->samples = frame->datalen / 2;  /* L16: 2 bytes per sample */
+      } else if (avail > 0) {
+        /* Partial fill: read what we have, zero-pad the rest */
+        recvBufRead(cb, (uint8_t *)frame->data, avail);
+        memset((uint8_t *)frame->data + avail, 0, frame->datalen - avail);
+        frame->samples = frame->datalen / 2;
+      }
+      /* If avail == 0, leave the frame untouched (original silence/audio) */
+      switch_mutex_unlock(cb->mutex);
+    } else {
+      write_frame_lock_fail_count++;
+      if (write_frame_lock_fail_count % 50 == 1) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+          "fork_write_frame: mutex trylock FAILED (%d times)\n", write_frame_lock_fail_count);
+      }
+    }
+
+    switch_core_media_bug_set_write_replace_frame(bug, frame);
     return SWITCH_TRUE;
   }
 

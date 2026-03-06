@@ -14,9 +14,21 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_audio_fork_load);
 
 SWITCH_MODULE_DEFINITION(mod_audio_fork, mod_audio_fork_load, mod_audio_fork_shutdown, mod_audio_fork_runtime);
 
+static int cb_type_counts[16] = {0};
+
 static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type)
 {
 	switch_core_session_t *session = switch_core_media_bug_get_session(bug);
+
+	/* Log all callback types periodically */
+	if (type >= 0 && type < 16) {
+		cb_type_counts[type]++;
+		if (cb_type_counts[type] % 500 == 1) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
+				"capture_callback: type=%d count=%d (INIT=0,READ=1,WRITE=2,WRITE_REPLACE=3,READ_REPLACE=4,CLOSE=8)\n",
+				type, cb_type_counts[type]);
+		}
+	}
 
 	switch (type) {
 	case SWITCH_ABC_TYPE_INIT:
@@ -24,16 +36,19 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
 
 	case SWITCH_ABC_TYPE_CLOSE:
 		{
-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Got SWITCH_ABC_TYPE_CLOSE.\n");
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "Got SWITCH_ABC_TYPE_CLOSE.\n");
 			fork_session_cleanup(session);
 		}
 		break;
-	
+
 	case SWITCH_ABC_TYPE_READ:
 		return fork_frame(bug, user_data);
 		break;
 
-	case SWITCH_ABC_TYPE_WRITE:
+	case SWITCH_ABC_TYPE_WRITE_REPLACE:
+		return fork_write_frame(bug, user_data);
+		break;
+
 	default:
 		break;
 	}
@@ -129,7 +144,7 @@ SWITCH_STANDARD_API(fork_function)
         unsigned int port;
         int sslFlags;
         int sampling = 16000;
-      	switch_media_bug_flag_t flags = SMBF_READ_STREAM ;
+      	switch_media_bug_flag_t flags = SMBF_READ_STREAM | SMBF_WRITE_REPLACE ;
         char *metadata = argc > 5 ? argv[5] : "{}" ;
         if (0 == strcmp(argv[3], "mixed")) {
           flags |= SMBF_WRITE_STREAM ;

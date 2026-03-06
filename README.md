@@ -1,28 +1,69 @@
-# drachtio-freeswitch-modules
-An open-source collection of freeswitch modules, primarily built for for use with [drachtio](https://drachtio.org) applications utilizing [drachtio-fsrmf](https://www.npmjs.com/package/drachtio-fsmrf), but generally usable and useful with generic freeswitch applications.  These modules have beeen tested with Freeswitch version 1.6.
+# freeswitch-modules
 
-#### [mod_audio_fork](modules/mod_audio_fork/README.md)
-Forks an audio stream and sends the raw audio in linear16 format over a websocket to a remote server in real-time. An initial text frame of JSON metadata can also be sent to the back-end to describe arbitrary information elements about the call or media stream.  The audio is never stored to disk locally on the media server, making it ideal for "no data at rest" type of applications.
+Custom FreeSWITCH image with `mod_audio_fork` for bidirectional WebSocket audio streaming. Originally based on code from [drachtio-freeswitch-modules](https://github.com/dochong/drachtio-freeswitch-modules), heavily modified and trimmed to a single module.
 
-#### [mod_google_tts](modules/mod_google_tts/README.md)
-A tts provider module that integrates with Google Cloud Text-to-Speech API and integrates into freeswitch's TTS framework (i.e., usable with the mod_dptools 'speak' application)
+## mod_audio_fork
 
-#### [mod_google_transcribe](modules/mod_google_transcribe/README.md)
-Adds a Freeswitch API call to start (or stop) real-time transcription on a Freeswitch channel using Google Cloud Speech-to-Text API.
+Attaches a media bug to a FreeSWITCH channel and streams bidirectional audio over a WebSocket connection.
 
-#### [mod_dialogflow](modules/mod_dialogflow/README.md)
-Adds a Freeswitch API to start a Google Dialogflow agent on a Freeswitch channel.
+**Upstream behavior** (send-only): Captures call audio in L16 format and streams it to a remote WebSocket server.
 
-# Installation
+**Our additions** (bidirectional): Binary audio frames received on the WebSocket are buffered in a ring buffer and injected back into the call via `SMBF_WRITE_REPLACE`. This enables real-time TTS playback without file I/O — the voice gateway streams synthesized audio back through the same WebSocket that carries STT audio.
 
-These modules have dependencies that require a custom version of freeswitch to be built that has support for [grpc](https://github.com/grpc/grpc) and [libwebsockets](libwebsockets.org). Specifically, mod_google_tts, mod_google_transcribe and mod_dialogflow require grpc, and mod_audio_fork requires libwebsockets.
+### API
 
-This project includes scripts to build a 1.6 version of Freeswitch that includes both libwebsockets and grpc support.  
+```
+uuid_audio_fork <uuid> start <wss-url> <mix-type> [metadata]
+uuid_audio_fork <uuid> stop
+```
 
-Please see the [ansible role](./ansible-role-drachtio-freeswitch/README.md) provided.  This has been tested on Debian 8, and for those who prefer (or are willing) to use ansible, it is the simplest way to build up a Freeswitch server from source with the necessary patches and libraries to use these modules.
+- `mix-type`: `mono` (caller only), `mixed` (both parties, single channel), `stereo` (two channels)
+- `metadata`: optional JSON sent as initial text frame after connection
 
-If you don't want to or can't use ansible for some reason and want to build everything by hand, have a look at the [build.sh](./build.sh) script, which has the commands to build freeswitch with the necessary support.  Again, to date please note that this has only been tested on Debian 8, since that is the reference platform for Freeswitch.
+## Building
 
-## Configuring
+The Dockerfile builds FreeSWITCH 1.10 from source (with only the modules needed for voice gateway) and compiles `mod_audio_fork` on top.
 
-The three modules that access google services (mod_google_tts, mod_google_transcribe, and mod_dialogflow) require a JSON service key file to be installed on the Freeswitch server, and the filename of that file to be configured in the module config files.  By default, the config files look for the key in `/tmp/gcs_service_account_key.json` but you can change this by editing the config file.
+```bash
+docker build -t drellia/freeswitch-mrf .
+```
+
+The first build takes a while (~15-20 min) since it compiles FreeSWITCH from source. Subsequent builds are fast due to Docker layer caching — only the `mod_audio_fork` compilation layer is re-run when module code changes.
+
+## Project Structure
+
+```
+├── Dockerfile                      # Multi-stage build (FreeSWITCH + mod_audio_fork)
+├── modules/
+│   └── mod_audio_fork/
+│       ├── mod_audio_fork.c        # FreeSWITCH module entry point
+│       ├── mod_audio_fork.h        # Shared types (cap_cb, ring buffer)
+│       ├── lws_glue.cpp            # libwebsockets client (send + receive)
+│       ├── lws_glue.h              # C API for session init/cleanup/frame
+│       └── Makefile.am             # Autotools build (unused in Docker build)
+└── README.md
+```
+
+## Included FreeSWITCH Modules
+
+Only the modules required by the voice gateway are compiled:
+
+| Module | Purpose |
+|--------|---------|
+| mod_sofia | SIP endpoint (calls) |
+| mod_event_socket | ESL interface (call control) |
+| mod_commands | API commands |
+| mod_dptools | Dialplan tools (answer, bridge, etc.) |
+| mod_dialplan_xml | XML dialplan |
+| mod_spandsp | DTMF detection |
+| mod_audio_fork | **Custom** — bidirectional WebSocket audio |
+| mod_sndfile | Audio file format support |
+| mod_native_file | Native file playback |
+| mod_tone_stream | Tone generation |
+| mod_loopback | Loopback endpoint |
+| mod_console | Console logging |
+| mod_logfile | File logging |
+
+## Usage with voice-gateway
+
+The voice-gateway's `docker-compose.dev.yml` builds this image and mounts FreeSWITCH config files. The gateway triggers `uuid_audio_fork` via ESL after placing a call, establishing a bidirectional audio WebSocket for the STT/TTS pipeline.

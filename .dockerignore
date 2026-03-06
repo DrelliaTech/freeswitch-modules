@@ -1,5 +1,5 @@
+.git
+.gitignore
 .dockerignore
-/conf/
-/ansible-roles
-Dockerfile
-ansible.cfg
+README.md
+LICENSE
