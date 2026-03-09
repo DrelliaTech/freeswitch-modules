@@ -13,7 +13,7 @@
 #define MAX_PATH_LEN (128)
 
 /* Receive ring buffer: 256KB ~= 16 seconds of L16 audio at 8kHz mono.
-   TTS audio arrives in bursts (faster than real-time) from the voice-gateway,
+   TTS audio arrives in bursts (faster than real-time) from the WebSocket peer,
    while fork_write_frame drains at real-time rate (320 bytes per 20ms frame). */
 #define RECV_BUF_SIZE (256 * 1024)
 

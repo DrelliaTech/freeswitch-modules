@@ -1,5 +1,5 @@
 # Build FreeSWITCH from source with custom mod_audio_fork.
-# Produces a minimal image with only the modules needed for the voice gateway.
+# Produces a minimal image with only the modules needed for WebSocket audio streaming.
 #
 # Usage:
 #   docker build -t drellia/freeswitch-mrf .
@@ -71,7 +71,7 @@ RUN cd /usr/local/src \
 
 WORKDIR /usr/local/src/freeswitch
 
-# Trim modules.conf to only what the voice gateway needs
+# Trim modules.conf to only the modules we need
 RUN cp build/modules.conf.in build/modules.conf.in.orig \
     && cat > build/modules.conf.in <<'MODULES'
 applications/mod_commands

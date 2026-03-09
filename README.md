@@ -8,7 +8,7 @@ Attaches a media bug to a FreeSWITCH channel and streams bidirectional audio ove
 
 **Upstream behavior** (send-only): Captures call audio in L16 format and streams it to a remote WebSocket server.
 
-**Our additions** (bidirectional): Binary audio frames received on the WebSocket are buffered in a ring buffer and injected back into the call via `SMBF_WRITE_REPLACE`. This enables real-time TTS playback without file I/O — the voice gateway streams synthesized audio back through the same WebSocket that carries STT audio.
+**Our additions** (bidirectional): Binary audio frames received on the WebSocket are buffered in a ring buffer and injected back into the call via `SMBF_WRITE_REPLACE`. This enables real-time TTS playback without file I/O — synthesized audio is streamed back through the same WebSocket that carries STT audio.
 
 ### API
 
@@ -22,7 +22,7 @@ uuid_audio_fork <uuid> stop
 
 ## Building
 
-The Dockerfile builds FreeSWITCH 1.10 from source (with only the modules needed for voice gateway) and compiles `mod_audio_fork` on top.
+The Dockerfile builds FreeSWITCH 1.10 from source (with only the modules needed for WebSocket audio streaming) and compiles `mod_audio_fork` on top.
 
 ```bash
 docker build -t drellia/freeswitch-mrf .
@@ -46,7 +46,7 @@ The first build takes a while (~15-20 min) since it compiles FreeSWITCH from sou
 
 ## Included FreeSWITCH Modules
 
-Only the modules required by the voice gateway are compiled:
+Only a minimal set of modules is compiled:
 
 | Module | Purpose |
 |--------|---------|
@@ -63,6 +63,3 @@ Only the modules required by the voice gateway are compiled:
 | mod_console | Console logging |
 | mod_logfile | File logging |
 
-## Usage with voice-gateway
-
-The voice-gateway's `docker-compose.dev.yml` builds this image and mounts FreeSWITCH config files. The gateway triggers `uuid_audio_fork` via ESL after placing a call, establishing a bidirectional audio WebSocket for the STT/TTS pipeline.
