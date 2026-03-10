@@ -12,10 +12,11 @@
 #define MAX_WS_URL_LEN (512)
 #define MAX_PATH_LEN (128)
 
-/* Receive ring buffer: 256KB ~= 16 seconds of L16 audio at 8kHz mono.
-   TTS audio arrives in bursts (faster than real-time) from the WebSocket peer,
-   while fork_write_frame drains at real-time rate (320 bytes per 20ms frame). */
-#define RECV_BUF_SIZE (256 * 1024)
+/* Receive ring buffer: 2MB ~= 2 minutes of L16 audio at 8kHz mono.
+   TTS audio arrives in bursts (2-3x faster than real-time) from the WebSocket peer,
+   while fork_write_frame drains at real-time rate (320 bytes per 20ms frame).
+   Must be large enough to hold the longest expected LLM response without drops. */
+#define RECV_BUF_SIZE (2 * 1024 * 1024)
 
 enum {
 	LWS_CLIENT_IDLE,
