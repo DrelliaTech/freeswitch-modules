@@ -85,6 +85,7 @@ formats/mod_sndfile
 formats/mod_tone_stream
 loggers/mod_console
 loggers/mod_logfile
+xml_int/mod_xml_curl
 MODULES
 
 RUN ./bootstrap.sh -j \
